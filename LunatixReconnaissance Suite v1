@@ -1,0 +1,401 @@
+#!/usr/bin/env python3
+"""
+LUNATIX RECONNAISSANCE SUITE v1.0
+Professional multi-function recon tool
+Author: LunatixLeaks Research
+Usage: python3 recon.py <target> [options]
+"""
+
+import sys
+import socket
+import dns.resolver
+import requests
+import ssl
+import json
+import argparse
+import subprocess
+import os
+from concurrent.futures import ThreadPoolExecutor
+from datetime import datetime
+import urllib.parse
+
+# ============================================
+# CONFIGURATION
+# ============================================
+TIMEOUT = 5
+THREADS = 20
+COMMON_PORTS = [21,22,23,25,53,80,110,111,135,139,143,443,445,993,995,1723,3306,3389,5900,8080,8443]
+USER_AGENT = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"
+
+class Colors:
+    HEADER = '\033[95m'
+    BLUE = '\033[94m'
+    CYAN = '\033[96m'
+    GREEN = '\033[92m'
+    YELLOW = '\033[93m'
+    RED = '\033[91m'
+    END = '\033[0m'
+    BOLD = '\033[1m'
+    UNDERLINE = '\033[4m'
+
+# ============================================
+# CORE FUNCTIONS
+# ============================================
+
+def print_banner():
+    banner = f"""
+{Colors.RED}╔══════════════════════════════════════════════════════════╗
+║{Colors.END}  LUNATIX RECONNAISSANCE SUITE v1.0                        {Colors.RED}║
+║{Colors.END}  Professional Intelligence Gathering Tool                 {Colors.RED}║
+║{Colors.END}  {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}                                  {Colors.RED}║
+╚══════════════════════════════════════════════════════════╝{Colors.END}
+"""
+    print(banner)
+
+def print_section(title):
+    print(f"\n{Colors.BLUE}┌─[{title}]{Colors.END}")
+    print(f"{Colors.BLUE}│{Colors.END}")
+
+def print_result(key, value, status="info"):
+    if status == "success":
+        print(f"{Colors.BLUE}├─>{Colors.END} {Colors.GREEN}{key}:{Colors.END} {value}")
+    elif status == "error":
+        print(f"{Colors.BLUE}├─>{Colors.END} {Colors.RED}{key}:{Colors.END} {value}")
+    elif status == "warning":
+        print(f"{Colors.BLUE}├─>{Colors.END} {Colors.YELLOW}{key}:{Colors.END} {value}")
+    else:
+        print(f"{Colors.BLUE}├─>{Colors.END} {key}: {value}")
+
+# ============================================
+# DNS RECONNAISSANCE
+# ============================================
+
+def dns_recon(target):
+    print_section("DNS RECONNAISSANCE")
+    results = {}
+    
+    # Remove protocol if present
+    if target.startswith(('http://', 'https://')):
+        target = urllib.parse.urlparse(target).netloc
+    
+    record_types = ['A', 'AAAA', 'MX', 'NS', 'TXT', 'SOA', 'CNAME']
+    
+    for rtype in record_types:
+        try:
+            resolver = dns.resolver.Resolver()
+            resolver.timeout = TIMEOUT
+            resolver.lifetime = TIMEOUT
+            
+            answers = resolver.resolve(target, rtype)
+            values = [str(r) for r in answers]
+            results[rtype] = values
+            print_result(rtype, ', '.join(values), "success")
+        except dns.resolver.NoAnswer:
+            pass
+        except dns.resolver.NXDOMAIN:
+            print_result(rtype, "NXDOMAIN", "error")
+        except Exception as e:
+            print_result(rtype, f"Error: {str(e)}", "error")
+    
+    return results
+
+# ============================================
+# PORT SCANNING
+# ============================================
+
+def scan_port(target, port):
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.settimeout(2)
+        result = sock.connect_ex((target, port))
+        sock.close()
+        
+        if result == 0:
+            try:
+                service = socket.getservbyport(port)
+            except:
+                service = "unknown"
+            return (port, service, "open")
+    except:
+        pass
+    return None
+
+def port_scan(target, ports=None):
+    print_section("PORT SCAN")
+    
+    if ports is None:
+        ports = COMMON_PORTS
+    
+    try:
+        target_ip = socket.gethostbyname(target)
+        print_result("Target IP", target_ip)
+    except:
+        print_result("Resolution", "Failed to resolve hostname", "error")
+        return
+    
+    open_ports = []
+    with ThreadPoolExecutor(max_workers=THREADS) as executor:
+        futures = [executor.submit(scan_port, target_ip, port) for port in ports]
+        for future in futures:
+            result = future.result()
+            if result:
+                port, service, status = result
+                open_ports.append(port)
+                print_result(f"Port {port}", f"{service} ({status})", "success")
+    
+    if not open_ports:
+        print_result("No open ports", "All scanned ports closed/filtered", "warning")
+    
+    return open_ports
+
+# ============================================
+# HTTP HEADERS & TECHNOLOGY DETECTION
+# ============================================
+
+def http_recon(target):
+    print_section("HTTP RECONNAISSANCE")
+    
+    if not target.startswith(('http://', 'https://')):
+        targets = [f"http://{target}", f"https://{target}"]
+    else:
+        targets = [target]
+    
+    for url in targets:
+        try:
+            headers = {
+                'User-Agent': USER_AGENT,
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8'
+            }
+            
+            response = requests.get(url, headers=headers, timeout=TIMEOUT, verify=False, allow_redirects=True)
+            
+            print_result("URL", url, "success")
+            print_result("Status Code", response.status_code)
+            print_result("Server", response.headers.get('Server', 'Unknown'))
+            print_result("Content-Type", response.headers.get('Content-Type', 'Unknown'))
+            print_result("Powered-By", response.headers.get('X-Powered-By', 'Unknown'))
+            
+            # Technology detection
+            tech = []
+            if 'php' in response.headers.get('X-Powered-By', '').lower():
+                tech.append('PHP')
+            if 'asp.net' in response.headers.get('X-Powered-By', '').lower():
+                tech.append('ASP.NET')
+            if 'nginx' in response.headers.get('Server', '').lower():
+                tech.append('Nginx')
+            if 'apache' in response.headers.get('Server', '').lower():
+                tech.append('Apache')
+            if 'cloudflare' in response.headers.get('Server', '').lower():
+                tech.append('Cloudflare')
+            
+            if tech:
+                print_result("Detected Tech", ', '.join(tech), "success")
+            
+            # Security headers
+            security_headers = ['X-Frame-Options', 'X-Content-Type-Options', 'X-XSS-Protection', 
+                              'Content-Security-Policy', 'Strict-Transport-Security']
+            
+            missing = []
+            for header in security_headers:
+                if header not in response.headers:
+                    missing.append(header)
+            
+            if missing:
+                print_result("Missing Security Headers", ', '.join(missing), "warning")
+            
+            break
+            
+        except requests.exceptions.SSLError:
+            print_result("SSL Error", f"SSL certificate verification failed for {url}", "error")
+        except requests.exceptions.ConnectionError:
+            print_result("Connection Error", f"Failed to connect to {url}", "error")
+        except Exception as e:
+            print_result("Error", str(e), "error")
+
+# ============================================
+# SSL/TLS INFORMATION
+# ============================================
+
+def ssl_recon(target):
+    print_section("SSL/TLS INFORMATION")
+    
+    if target.startswith(('http://', 'https://')):
+        target = urllib.parse.urlparse(target).netloc
+    
+    try:
+        context = ssl.create_default_context()
+        with socket.create_connection((target, 443), timeout=TIMEOUT) as sock:
+            with context.wrap_socket(sock, server_hostname=target) as ssock:
+                cert = ssock.getpeercert()
+                
+                print_result("Subject", dict(x[0] for x in cert['subject']).get('commonName', 'Unknown'))
+                print_result("Issuer", dict(x[0] for x in cert['issuer']).get('commonName', 'Unknown'))
+                print_result("Version", cert.get('version', 'Unknown'))
+                print_result("Serial Number", cert.get('serialNumber', 'Unknown'))
+                print_result("Not Before", cert.get('notBefore', 'Unknown'))
+                print_result("Not After", cert.get('notAfter', 'Unknown'))
+                
+                # Check expiration
+                from datetime import datetime
+                not_after = datetime.strptime(cert['notAfter'], '%b %d %H:%M:%S %Y %Z')
+                days_left = (not_after - datetime.now()).days
+                
+                if days_left < 30:
+                    print_result("Expiration Warning", f"Certificate expires in {days_left} days", "warning")
+                else:
+                    print_result("Expiration", f"Valid for {days_left} days", "success")
+                
+    except Exception as e:
+        print_result("SSL/TLS", f"Failed to retrieve certificate: {str(e)}", "error")
+
+# ============================================
+# WHOIS LOOKUP
+# ============================================
+
+def whois_lookup(target):
+    print_section("WHOIS INFORMATION")
+    
+    if target.startswith(('http://', 'https://')):
+        target = urllib.parse.urlparse(target).netloc
+    
+    try:
+        import whois
+        w = whois.whois(target)
+        
+        if w.name:
+            print_result("Registrant Name", w.name)
+        if w.org:
+            print_result("Organization", w.org)
+        if w.email:
+            print_result("Email", w.email)
+        if w.registrar:
+            print_result("Registrar", w.registrar)
+        if w.creation_date:
+            if isinstance(w.creation_date, list):
+                print_result("Created", str(w.creation_date[0]))
+            else:
+                print_result("Created", str(w.creation_date))
+        if w.expiration_date:
+            if isinstance(w.expiration_date, list):
+                print_result("Expires", str(w.expiration_date[0]))
+            else:
+                print_result("Expires", str(w.expiration_date))
+        if w.name_servers:
+            print_result("Name Servers", ', '.join(w.name_servers[:5]))
+            
+    except ImportError:
+        print_result("WHOIS", "Python whois module not installed. Install with: pip install python-whois", "error")
+    except Exception as e:
+        print_result("WHOIS", f"Lookup failed: {str(e)}", "error")
+
+# ============================================
+# SUBDOMAIN ENUMERATION
+# ============================================
+
+def subdomain_enum(target):
+    print_section("SUBDOMAIN ENUMERATION")
+    
+    if target.startswith(('http://', 'https://')):
+        target = urllib.parse.urlparse(target).netloc
+    
+    # Try certificate transparency logs
+    try:
+        url = f"https://crt.sh/?q=%.{target}&output=json"
+        response = requests.get(url, timeout=TIMEOUT)
+        
+        if response.status_code == 200:
+            data = response.json()
+            subdomains = set()
+            
+            for entry in data:
+                name = entry.get('name_value', '')
+                if name:
+                    for sub in name.split('\n'):
+                        if sub.endswith(f".{target}"):
+                            subdomains.add(sub.lower())
+            
+            if subdomains:
+                for sub in sorted(list(subdomains))[:10]:
+                    print_result("Found", sub, "success")
+                if len(subdomains) > 10:
+                    print_result("Additional", f"{len(subdomains)-10} more subdomains found", "info")
+            else:
+                print_result("Subdomains", "None found via crt.sh", "warning")
+    except:
+        print_result("Subdomain Enum", "Failed to query crt.sh", "warning")
+
+# ============================================
+# MAIN EXECUTION
+# ============================================
+
+def main():
+    parser = argparse.ArgumentParser(description='Lunatix Reconnaissance Suite')
+    parser.add_argument('target', help='Target domain or IP')
+    parser.add_argument('-p', '--ports', help='Custom ports (comma-separated)', default=None)
+    parser.add_argument('-t', '--threads', type=int, default=20, help='Thread count (default: 20)')
+    parser.add_argument('-o', '--output', help='Output file (JSON)')
+    parser.add_argument('--no-dns', action='store_true', help='Skip DNS recon')
+    parser.add_argument('--no-port', action='store_true', help='Skip port scan')
+    parser.add_argument('--no-http', action='store_true', help='Skip HTTP recon')
+    parser.add_argument('--no-ssl', action='store_true', help='Skip SSL recon')
+    parser.add_argument('--no-whois', action='store_true', help='Skip WHOIS lookup')
+    parser.add_argument('--no-subdomains', action='store_true', help='Skip subdomain enumeration')
+    
+    args = parser.parse_args()
+    
+    global THREADS
+    THREADS = args.threads
+    
+    # Parse custom ports
+    custom_ports = None
+    if args.ports:
+        try:
+            custom_ports = [int(p.strip()) for p in args.ports.split(',')]
+        except:
+            print(f"{Colors.RED}[!] Invalid port list{Colors.END}")
+            sys.exit(1)
+    
+    # Run recon
+    print_banner()
+    
+    results = {
+        'target': args.target,
+        'timestamp': datetime.now().isoformat(),
+        'results': {}
+    }
+    
+    if not args.no_dns:
+        results['results']['dns'] = dns_recon(args.target)
+    
+    if not args.no_port:
+        results['results']['ports'] = port_scan(args.target, custom_ports)
+    
+    if not args.no_http:
+        results['results']['http'] = http_recon(args.target)
+    
+    if not args.no_ssl:
+        results['results']['ssl'] = ssl_recon(args.target)
+    
+    if not args.no_whois:
+        results['results']['whois'] = whois_lookup(args.target)
+    
+    if not args.no_subdomains:
+        results['results']['subdomains'] = subdomain_enum(args.target)
+    
+    # Save output
+    if args.output:
+        with open(args.output, 'w') as f:
+            json.dump(results, f, indent=2, default=str)
+        print(f"\n{Colors.GREEN}[✓] Results saved to {args.output}{Colors.END}")
+    
+    print(f"\n{Colors.GREEN}[✓] Recon complete{Colors.END}")
+
+if __name__ == "__main__":
+    try:
+        main()
+    except KeyboardInterrupt:
+        print(f"\n{Colors.YELLOW}[!] Interrupted by user{Colors.END}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"\n{Colors.RED}[!] Fatal error: {str(e)}{Colors.END}")
+        sys.exit(1)
